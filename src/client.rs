@@ -875,7 +875,7 @@ impl ClobClient {
     ) -> RequestBuilder {
         let req = self
             .http_client
-            .request(method, format!("{}{}", &self.base_url, endpoint));
+            .request(method, format!("{}{}", self.base_url, endpoint));
         headers.fold(req, |r, (k, v)| r.header(HeaderName::from_static(k), v))
     }
 
