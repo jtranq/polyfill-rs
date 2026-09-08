@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/polyfill-rs.svg)](https://crates.io/crates/polyfill-rs)
 [![Documentation](https://docs.rs/polyfill-rs/badge.svg)](https://docs.rs/polyfill-rs)
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
 
 A high-performance Polymarket Rust client with latency-optimized data structures and allocator-conscious hot paths. The `0.4.x` line is V2-native and intentionally breaking for authenticated trading flows.
 
@@ -100,3 +100,8 @@ Price data converts to fixed-point at ingress boundaries while maintaining tick-
 | **Connection pre-warming** | **70% faster subsequent requests** | Application startup |
 | **Request parallelization** | **200% faster batch operations** | Multi-market data fetching |
 | **Circuit breaker resilience** | **Better uptime during instability** | Production trading systems |
+
+## License
+
+Licensed under either the [Apache License, Version 2.0](LICENSE-APACHE) or the
+[MIT license](LICENSE-MIT), at your option.
