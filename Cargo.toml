@@ -81,6 +81,11 @@ side-by-side-benchmark = []
 official-client-benchmark = ["dep:polymarket_client_sdk_v2"]
 
 [[example]]
+name = "orderbook"
+required-features = ["stream"]
+test = true
+
+[[example]]
 name = "side_by_side_benchmark"
 required-features = ["side-by-side-benchmark"]
 

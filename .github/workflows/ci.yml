@@ -33,7 +33,7 @@ jobs:
       run: cargo fmt --all -- --check
 
     - name: Run clippy
-      run: cargo clippy --lib --bins --tests --benches --all-features -- -D warnings && cargo clippy --example benchmark_with_keepalive --example demo --example final_benchmark --example http2_tuning_benchmark --example performance_benchmark --example quick_demo --example snipe -- -D warnings
+      run: cargo clippy --lib --bins --tests --benches --all-features -- -D warnings && cargo clippy --example benchmark_with_keepalive --example demo --example final_benchmark --example http2_tuning_benchmark --example performance_benchmark --example quick_demo --example snipe --example orderbook -- -D warnings
 
     - name: Run tests (excluding no-alloc hot paths)
       run: cargo test --all-features -- --skip no_alloc_
@@ -47,6 +47,10 @@ jobs:
         cargo build --example performance_benchmark
         cargo build --example quick_demo
         cargo build --example snipe
+        cargo build --example orderbook
+
+    - name: Check order-book demo CLI
+      run: cargo run --example orderbook -- --help
 
     - name: Build documentation
       run: cargo doc --no-deps --all-features

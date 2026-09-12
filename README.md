@@ -16,6 +16,14 @@ Notably order book paths that can touch the allocator by design:
 - Book removal/drop paths that release owned buffers: `src/book.rs`
 
 
+## Live Demo
+
+![Live Polymarket order-book demo](assets/orderbook-demo.gif)
+
+```sh
+cargo run --release --locked --example orderbook
+```
+
 ## Quick Start
 
 Add to your `Cargo.toml`:
