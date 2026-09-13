@@ -113,6 +113,10 @@ harness = false
 name = "ws_hot_path"
 harness = false
 
+[[bench]]
+name = "hft_loop"
+harness = false
+
 [profile.release]
 # Optimizations for HFT performance
 opt-level = 3

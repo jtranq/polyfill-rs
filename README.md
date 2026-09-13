@@ -81,8 +81,12 @@ Real-world Polymarket API latency broken down by request phase:
 | **Spread/Mid Calculations** | 26.6 ns | best bid/ask + spread + mid over sorted-vector book sides |
 | **JSON Parsing (480KB)** | ~0.5 ms | SIMD-backed parsing for large REST market responses and benchmarked polyfill typed parse path |
 | **WS `book` hot path (decode + apply)** | ~0.24 µs / 1.56 µs / 5.92 µs | 1 / 16 / 64 levels-per-side, strict fixed-point tape parser with generation-marked snapshot retention (see `benches/ws_hot_path.rs`) |
+| **Local HFT Loop** | ~39.0 µs | WS apply + best-ask decision + prepared EIP-712 signing + submit-body serialization + L2 auth headers, no live network I/O (see `benches/hft_loop.rs`) |
 
 Run the WS hot-path benchmark locally with `cargo bench --bench ws_hot_path`.
+Run the local HFT-loop benchmark with `cargo bench --bench hft_loop --features official-client-benchmark`.
+
+**Local HFT-loop comparison:** In the current local offline run, `polyfill-rs` measured ~39.0 µs for a full synthetic loop with 16 book levels per side: WS `book` apply, best-ask decision, prepared order signing, submit-body serialization, and L2 auth header construction. The comparable order-only path without WS parsing or L2 auth measured ~35.4 µs for `polyfill-rs` and ~35.4 µs for `rs-clob-client-v2`. The `rs-clob-client-v2` row uses its warmed public builder/sign/serialize API; it does not include L2 auth header construction because that helper is not public in the SDK.
 
 **Parsing paths:** `polyfill-rs` keeps two parsing layers on purpose. The allocation-sensitive WS `book` path uses `WsBookUpdateProcessor` in `src/ws_hot_path.rs`, which walks a reusable `simd-json` tape and applies fixed-point book levels directly. The generic stream parser in `src/decode.rs` is an ergonomic compatibility path: it parses through `serde_json::Value` so it can tolerate batches, unknown event types, and mixed message shapes. Likewise, several generic numeric/decimal deserializers in `src/decode.rs` accept string-or-number API fields through `serde_json::Value`; they are not the zero-allocation hot path.
 
