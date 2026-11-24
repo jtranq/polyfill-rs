@@ -69,6 +69,7 @@ impl FillEngine {
     }
 
     /// Simulate executing a market order against an order book.
+    /// Buy amounts are collateral budgets before fees. Sell amounts are share quantities.
     ///
     /// This method allocates and converts internal book levels back to `Decimal`
     /// via `OrderBook::asks`/`OrderBook::bids`, then builds owned `FillEvent`
@@ -108,17 +109,27 @@ impl FillEngine {
 
         // Execute fills
         let mut fills = Vec::new();
-        let mut remaining_size = order.amount;
+        let mut remaining_amount = order.amount;
         let mut total_cost = Decimal::ZERO;
         let mut total_size = Decimal::ZERO;
 
         for level in levels {
-            if remaining_size.is_zero() {
+            if remaining_amount.is_zero() {
                 break;
             }
 
-            let fill_size = std::cmp::min(remaining_size, level.size);
-            let fill_cost = fill_size * level.price;
+            let (fill_size, fill_cost) = match order.side {
+                Side::BUY => {
+                    // Spend collateral first so rounding fractional shares cannot
+                    // leave a spurious remaining budget or overspend it.
+                    let cost = remaining_amount.min(level.size * level.price);
+                    (cost / level.price, cost)
+                },
+                Side::SELL => {
+                    let size = remaining_amount.min(level.size);
+                    (size, size * level.price)
+                },
+            };
 
             // Calculate fee
             let fee = self.calculate_fee(fill_cost);
@@ -142,7 +153,10 @@ impl FillEngine {
             fills.push(fill);
             total_cost += fill_cost;
             total_size += fill_size;
-            remaining_size -= fill_size;
+            remaining_amount -= match order.side {
+                Side::BUY => fill_cost,
+                Side::SELL => fill_size,
+            };
         }
 
         // Check slippage
@@ -169,7 +183,7 @@ impl FillEngine {
         }
 
         // Determine status
-        let status = if remaining_size.is_zero() {
+        let status = if remaining_amount.is_zero() {
             FillStatus::Filled
         } else if total_size >= self.min_fill_size {
             FillStatus::Partial
