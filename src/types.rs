@@ -538,6 +538,8 @@ pub struct MarketOrderRequest {
     pub token_id: String,
     pub side: Side,
     pub amount: Decimal, // USD amount for buys, token amount for sells
+    /// Adverse slippage in percent, where 2 means 2%, capped by the fill engine maximum.
+    /// `None` uses the engine maximum.
     pub slippage_tolerance: Option<Decimal>,
     pub client_id: Option<String>,
 }
