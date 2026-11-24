@@ -97,13 +97,6 @@ impl BookSide {
     }
 
     #[inline]
-    fn trim_depth(&mut self, max_depth: usize) {
-        if self.levels.len() > max_depth {
-            self.levels.truncate(max_depth);
-        }
-    }
-
-    #[inline]
     fn iter_top(&self, depth: usize) -> impl Iterator<Item = (Price, &StoredLevel)> {
         self.levels
             .iter()
@@ -219,22 +212,14 @@ pub struct OrderBook {
     /// We store this in ticks for fast validation without conversion
     tick_size_ticks: Option<Price>,
 
-    /// Maximum depth to maintain (how many price levels to keep)
-    ///
-    /// We don't need to track every single price level, just the best ones because:
-    /// - Trading reality 90% of volume happens in the top 5-10 price levels
-    /// - Execution priority: Orders get filled from best price first, so deep levels often don't matter
-    /// - Market efficiency: If you're buying and best ask is $0.67, you'll never pay $0.95
-    /// - Risk management: Large orders that would hit deep levels are usually broken up
-    /// - Data freshness: Deep levels often have stale orders from hours/days ago
-    ///
-    /// Typical values: 10-50 for retail, 100-500 for institutional HFT systems
+    /// Maximum number of levels returned per side in public views.
+    /// All received levels remain stored so deltas can reveal deeper prices.
     max_depth: usize,
 }
 
 impl OrderBook {
-    /// Create a new order book
-    /// Just sets up empty bid/ask maps and basic metadata
+    /// Create a book that retains all supplied levels for incremental updates.
+    /// `max_depth` caps returned views. Storage grows with the number of live levels.
     pub fn new(token_id: String, max_depth: usize) -> Self {
         // Hash the token_id once for fast lookups later
         let token_id_hash = {
@@ -410,13 +395,13 @@ impl OrderBook {
         math::mid_price_fast(best_bid_ticks, best_ask_ticks)
     }
 
-    /// Get all bids up to a certain depth (top N price levels)
+    /// Get bids up to the requested depth, capped at `max_depth`.
     /// Returns them in descending price order (best bids first)
     ///
     /// PERFORMANCE: Converts from internal fixed-point to external Decimal format
     /// Only call this when you need to return data to external APIs
     pub fn bids(&self, depth: Option<usize>) -> Vec<BookLevel> {
-        let depth = depth.unwrap_or(self.max_depth);
+        let depth = depth.unwrap_or(self.max_depth).min(self.max_depth);
         self.bids
             .iter_top(depth)
             .map(|(price_ticks, level)| BookLevel {
@@ -426,13 +411,13 @@ impl OrderBook {
             .collect()
     }
 
-    /// Get all asks up to a certain depth (top N price levels)
+    /// Get asks up to the requested depth, capped at `max_depth`.
     /// Returns them in ascending price order (best asks first)
     ///
     /// PERFORMANCE: Converts from internal fixed-point to external Decimal format
     /// Only call this when you need to return data to external APIs
     pub fn asks(&self, depth: Option<usize>) -> Vec<BookLevel> {
-        let depth = depth.unwrap_or(self.max_depth);
+        let depth = depth.unwrap_or(self.max_depth).min(self.max_depth);
         self.asks
             .iter_top(depth)
             .map(|(price_ticks, level)| BookLevel {
@@ -442,29 +427,28 @@ impl OrderBook {
             .collect()
     }
 
-    /// Get all bids in fast internal format
+    /// Get bids in fast internal format, capped at `max_depth`.
     /// Use this for internal calculations to avoid conversion overhead
     pub fn bids_fast(&self, depth: Option<usize>) -> Vec<FastBookLevel> {
-        let depth = depth.unwrap_or(self.max_depth);
+        let depth = depth.unwrap_or(self.max_depth).min(self.max_depth);
         self.bids
             .iter_top(depth)
             .map(|(price, level)| FastBookLevel::new(price, level.qty))
             .collect()
     }
 
-    /// Get all asks in fast internal format (PERFORMANCE OPTIMIZED)
+    /// Get asks in fast internal format, capped at `max_depth`.
     /// Use this for internal calculations to avoid conversion overhead
     pub fn asks_fast(&self, depth: Option<usize>) -> Vec<FastBookLevel> {
-        let depth = depth.unwrap_or(self.max_depth);
+        let depth = depth.unwrap_or(self.max_depth).min(self.max_depth);
         self.asks
             .iter_top(depth)
             .map(|(price, level)| FastBookLevel::new(price, level.qty))
             .collect()
     }
 
-    /// Get the full book snapshot
-    /// Creates a copy of the current state that can be safely passed around
-    /// without worrying about the original book changing
+    /// Copy a view of the book capped at `max_depth` per side.
+    /// This view can omit levels required to seed another incremental book.
     pub fn snapshot(&self) -> crate::types::OrderBook {
         crate::types::OrderBook {
             token_id: self.token_id.clone(),
@@ -500,7 +484,7 @@ impl OrderBook {
     /// Performance improvement: ~50x faster than the old Decimal version!
     /// - No Decimal conversions in the hot path
     /// - Integer comparisons instead of Decimal comparisons
-    /// - No memory allocations for price/size operations
+    /// - Existing-level updates reuse storage, while new levels may grow it
     pub fn apply_delta_fast(&mut self, delta: FastOrderDelta) -> Result<()> {
         // Validate sequence ordering - ignore old updates that arrive late
         // This is crucial for maintaining data integrity in real-time systems
@@ -548,9 +532,6 @@ impl OrderBook {
             Side::BUY => self.apply_bid_delta_fast(delta.price, delta.size),
             Side::SELL => self.apply_ask_delta_fast(delta.price, delta.size),
         }
-
-        // Keep the book from getting too deep (memory management)
-        self.trim_depth();
 
         debug!(
             "Applied fast delta: {} {} @ {} ticks (seq: {})",
@@ -658,7 +639,6 @@ impl OrderBook {
         }
 
         self.finish_snapshot();
-        self.trim_depth();
         Ok(())
     }
 
@@ -798,7 +778,6 @@ impl OrderBook {
         }
 
         self.finish_snapshot();
-        self.trim_depth();
 
         Ok(())
     }
@@ -827,34 +806,7 @@ impl OrderBook {
         self.asks.retain_generation(generation);
     }
 
-    /// Trim the book to maintain depth limits
-    /// We don't want to track every single price level - just the best ones
-    ///
-    /// Why limit depth? Several reasons:
-    /// 1. Memory efficiency: A popular market might have thousands of price levels,
-    ///    but only the top 10-50 levels are actually tradeable with reasonable size
-    /// 2. Performance: Fewer levels = faster iteration when calculating market impact
-    /// 3. Relevance: Deep levels (like bids at $0.01 when best bid is $0.65) are
-    ///    mostly noise and will never get hit in normal trading
-    /// 4. Stale data: Deep levels often contain old orders that haven't been cancelled
-    /// 5. Network bandwidth: Less data to send when streaming updates
-    fn trim_depth(&mut self) {
-        // For bids, remove the LOWEST prices (worst bids) if we have too many
-        // Example: If best bid is $0.65, we don't care about bids at $0.10
-        self.bids.trim_depth(self.max_depth);
-
-        // For asks, remove the HIGHEST prices (worst asks) if we have too many
-        // Example: If best ask is $0.67, we don't care about asks at $0.95
-        self.asks.trim_depth(self.max_depth);
-    }
-
-    /// Calculate the market impact for a given order size
-    /// This is exactly why we don't need deep levels - if your order would require
-    /// hitting prices way off the current market (like $0.95 when best ask is $0.67),
-    /// you'd never actually place that order. You'd either:
-    /// 1. Break it into smaller pieces over time
-    /// 2. Use a different trading strategy
-    /// 3. Accept that there's not enough liquidity right now
+    /// Calculate market impact using all retained levels.
     pub fn calculate_market_impact(&self, side: Side, size: Decimal) -> Option<MarketImpact> {
         let size_units = decimal_to_qty(size).ok()?;
         let (filled_units, total_notional, best_price_ticks) = match side {
@@ -1007,12 +959,8 @@ pub struct MarketImpact {
 /// This manages multiple order books (one per token) and handles concurrent access
 /// Multiple threads can read/write different books simultaneously
 ///
-/// The depth limiting becomes even more critical here because we might be tracking
-/// hundreds or thousands of different tokens simultaneously. If each book had
-/// unlimited depth, we could easily use gigabytes of RAM for mostly useless data.
-///
-/// Example: 1000 tokens × 1000 price levels × 32 bytes per level = 32MB just for prices
-/// With depth limiting: 1000 tokens × 50 levels × 32 bytes = 1.6MB (20x less memory)
+/// Each book retains all received levels. `max_depth` bounds returned views,
+/// while storage scales with the total number of live levels across tokens.
 #[derive(Debug)]
 pub struct OrderBookManager {
     shards: Arc<[BookShard]>, // Token ID -> shard-local OrderBook
@@ -1213,8 +1161,7 @@ pub struct BookAnalytics {
 }
 
 impl OrderBook {
-    /// Calculate analytics for this book
-    /// Gives you a quick health check of the market
+    /// Calculate analytics over all retained levels in this book.
     pub fn analytics(&self) -> BookAnalytics {
         let bid_count = self.bids.len();
         let ask_count = self.asks.len();
@@ -1966,6 +1913,149 @@ mod tests {
 
         // Note: We can't easily test actual staleness without manipulating time,
         // but we can test the method exists and works with fresh data
+    }
+
+    #[test]
+    fn test_incremental_best_price_retains_levels_beyond_view_depth() {
+        for (side, prices) in [
+            (Side::SELL, [dec!(0.50), dec!(0.60), dec!(0.70), dec!(0.80)]),
+            (Side::BUY, [dec!(0.50), dec!(0.40), dec!(0.30), dec!(0.20)]),
+        ] {
+            for source in ["snapshot", "ws_snapshot", "deltas"] {
+                for fast in [false, true] {
+                    let mut book = OrderBook::new("test_token".into(), 2);
+                    let apply = |book: &mut OrderBook, price, size, sequence| {
+                        let delta = OrderDelta {
+                            token_id: "test_token".into(),
+                            timestamp: Utc::now(),
+                            side,
+                            price,
+                            size,
+                            sequence,
+                        };
+                        if fast {
+                            book.apply_delta_fast(
+                                FastOrderDelta::from_order_delta(&delta, None).unwrap(),
+                            )
+                            .unwrap();
+                        } else {
+                            book.apply_delta(delta).unwrap();
+                        }
+                    };
+                    match source {
+                        "snapshot" => {
+                            let levels = prices[..3]
+                                .iter()
+                                .map(|&price| OrderSummary {
+                                    price,
+                                    size: dec!(10),
+                                })
+                                .collect();
+                            let (bids, asks) = if side == Side::BUY {
+                                (levels, vec![])
+                            } else {
+                                (vec![], levels)
+                            };
+                            book.apply_book_update(&BookUpdate {
+                                asset_id: "test_token".into(),
+                                market: "test".into(),
+                                timestamp: 100,
+                                bids,
+                                asks,
+                                hash: None,
+                            })
+                            .unwrap();
+                        },
+                        "ws_snapshot" => {
+                            let levels: Vec<_> = prices[..3]
+                                .iter()
+                                .map(|&price| ParsedBookLevel {
+                                    side,
+                                    price_ticks: decimal_to_price_exact(price).unwrap(),
+                                    size_units: decimal_to_qty(dec!(10)).unwrap(),
+                                })
+                                .collect();
+                            book.apply_ws_book_snapshot_fast("test_token", 100, None, &levels)
+                                .unwrap();
+                        },
+                        "deltas" => {
+                            for (index, &price) in prices[..3].iter().enumerate() {
+                                apply(&mut book, price, dec!(10), index as u64 + 1);
+                            }
+                        },
+                        _ => unreachable!(),
+                    }
+                    let view = if side == Side::BUY {
+                        book.bids(None)
+                    } else {
+                        book.asks(None)
+                    };
+                    assert_eq!(view.len(), 2);
+                    apply(&mut book, prices[0], Decimal::ZERO, 4);
+                    apply(&mut book, prices[3], dec!(10), 5);
+                    apply(&mut book, prices[1], Decimal::ZERO, 6);
+                    let best = if side == Side::BUY {
+                        book.best_bid()
+                    } else {
+                        book.best_ask()
+                    };
+                    assert_eq!(
+                        best.unwrap().price,
+                        prices[2],
+                        "{side:?} {source} fast={fast}"
+                    );
+
+                    // A new full snapshot still removes levels omitted from that snapshot.
+                    book.apply_ws_book_snapshot_fast(
+                        "test_token",
+                        200,
+                        None,
+                        &[ParsedBookLevel {
+                            side,
+                            price_ticks: decimal_to_price_exact(prices[3]).unwrap(),
+                            size_units: decimal_to_qty(dec!(10)).unwrap(),
+                        }],
+                    )
+                    .unwrap();
+                    apply(&mut book, prices[3], Decimal::ZERO, 7);
+                    let best = if side == Side::BUY {
+                        book.best_bid()
+                    } else {
+                        book.best_ask()
+                    };
+                    assert!(best.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_depth_limits_views_while_analytics_use_all_levels() {
+        let mut book = OrderBook::new("test_token".into(), 2);
+        for (index, price) in [dec!(0.50), dec!(0.60), dec!(0.70)].into_iter().enumerate() {
+            book.apply_delta(OrderDelta {
+                token_id: "test_token".into(),
+                timestamp: Utc::now(),
+                side: Side::SELL,
+                price,
+                size: dec!(10),
+                sequence: index as u64 + 1,
+            })
+            .unwrap();
+        }
+        assert_eq!(book.asks(None).len(), 2);
+        assert_eq!(book.asks(Some(100)).len(), 2);
+        assert_eq!(book.asks_fast(Some(100)).len(), 2);
+        assert_eq!(book.asks(Some(1)).len(), 1);
+        assert_eq!(book.snapshot().asks.len(), 2);
+        assert_eq!(book.analytics().ask_count, 3);
+        assert_eq!(book.analytics().total_ask_size, dec!(30));
+        assert_eq!(
+            book.calculate_market_impact(Side::BUY, dec!(30))
+                .unwrap()
+                .size_filled,
+            dec!(30)
+        );
     }
 
     #[test]
