@@ -131,6 +131,69 @@ struct ClientAuthConfig {
 }
 
 impl ClobClient {
+    /// Check status before decoding any success payload and retain only a small
+    /// error body excerpt, even when the upstream response is unexpectedly large.
+    async fn ensure_success(mut response: Response) -> Result<Response> {
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| {
+                value
+                    .parse::<u64>()
+                    .ok()
+                    .map(Duration::from_secs)
+                    .or_else(|| {
+                        chrono::DateTime::parse_from_rfc2822(value)
+                            .ok()
+                            .map(|date| {
+                                date.signed_duration_since(chrono::Utc::now())
+                                    .to_std()
+                                    .unwrap_or_default()
+                            })
+                    })
+            });
+        const MAX_ERROR_BODY_BYTES: usize = 4096;
+        let mut body = Vec::new();
+        while body.len() < MAX_ERROR_BODY_BYTES {
+            // A body read failure must not hide the HTTP failure we already received.
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    let keep = chunk.len().min(MAX_ERROR_BODY_BYTES - body.len());
+                    body.extend_from_slice(&chunk[..keep]);
+                },
+                Ok(None) | Err(_) => break,
+            }
+        }
+        let mut excerpt = String::from_utf8_lossy(&body).into_owned();
+        let mut end = excerpt.len().min(MAX_ERROR_BODY_BYTES);
+        while !excerpt.is_char_boundary(end) {
+            end -= 1;
+        }
+        excerpt.truncate(end);
+        let mut message = format!("HTTP {status}");
+        if !excerpt.is_empty() {
+            message.push_str(": ");
+            message.push_str(&excerpt);
+        }
+        if body.len() == MAX_ERROR_BODY_BYTES {
+            message.push_str(" [truncated]");
+        }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            Err(PolyfillError::RateLimit {
+                message,
+                retry_after,
+            })
+        } else {
+            Err(PolyfillError::api(status.as_u16(), message))
+        }
+    }
+
     async fn parse_json_response<T>(response: Response) -> Result<T>
     where
         T: DeserializeOwned,
@@ -361,13 +424,7 @@ impl ClobClient {
             .get(format!("{}/time", self.base_url))
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get server time",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         let time_text = response.text().await?;
         let timestamp = time_text
@@ -386,13 +443,7 @@ impl ClobClient {
             .query(&[("token_id", token_id)])
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get order book",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         Self::parse_json_response(response).await
     }
@@ -405,13 +456,7 @@ impl ClobClient {
             .query(&[("token_id", token_id)])
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get midpoint",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         Self::parse_json_response(response).await
     }
@@ -424,13 +469,7 @@ impl ClobClient {
             .query(&[("token_id", token_id)])
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get spread",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         let spread: SpreadResponse = response.json().await?;
         Ok(spread)
@@ -452,13 +491,7 @@ impl ClobClient {
             .json(&request_data)
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get batch spreads",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<std::collections::HashMap<String, Decimal>>()
@@ -474,13 +507,7 @@ impl ClobClient {
             .query(&[("token_id", token_id), ("side", side.as_str())])
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get price",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         let price: PriceResponse = response.json().await?;
         Ok(price)
@@ -492,13 +519,7 @@ impl ClobClient {
             .get(format!("{}/markets-by-token/{}", self.base_url, token_id))
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get market by token",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<MarketByTokenResponse>()
@@ -513,13 +534,7 @@ impl ClobClient {
             .get(format!("{}/clob-markets/{}", self.base_url, condition_id))
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get clob market info",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<ClobMarketInfo>()
@@ -545,16 +560,7 @@ impl ClobClient {
         let req = self.create_request_with_headers(Method::GET, &endpoint, headers.into_iter());
 
         let response = req.send().await?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
-            let message = if body.is_empty() {
-                "Failed to get builder fee rate".to_string()
-            } else {
-                format!("Failed to get builder fee rate: {body}")
-            };
-            return Err(PolyfillError::api(status, message));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<BuilderFeeRateResponse>()
@@ -607,25 +613,7 @@ impl ClobClient {
         }
 
         let response = request.send().await?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<Value>(&body)
-                .ok()
-                .and_then(|v| {
-                    v.get("error")
-                        .and_then(Value::as_str)
-                        .map(|s| s.to_string())
-                })
-                .unwrap_or_else(|| {
-                    if body.is_empty() {
-                        "Failed to get prices history".to_string()
-                    } else {
-                        body
-                    }
-                });
-            return Err(PolyfillError::api(status, message));
-        }
+        let response = Self::ensure_success(response).await?;
 
         Ok(response.json::<PricesHistoryResponse>().await?)
     }
@@ -659,25 +647,7 @@ impl ClobClient {
         }
 
         let response = request.send().await?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<Value>(&body)
-                .ok()
-                .and_then(|v| {
-                    v.get("error")
-                        .and_then(Value::as_str)
-                        .map(|s| s.to_string())
-                })
-                .unwrap_or_else(|| {
-                    if body.is_empty() {
-                        "Failed to get prices history".to_string()
-                    } else {
-                        body
-                    }
-                });
-            return Err(PolyfillError::api(status, message));
-        }
+        let response = Self::ensure_success(response).await?;
 
         Ok(response.json::<PricesHistoryResponse>().await?)
     }
@@ -690,13 +660,7 @@ impl ClobClient {
             .query(&[("token_id", token_id)])
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get tick size",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         let tick_size_response: Value = response.json().await?;
         let tick_size = tick_size_response["minimum_tick_size"]
@@ -721,13 +685,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get fee rate",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         let fee_rate: crate::types::FeeRateResponse = response
             .json()
@@ -748,12 +706,7 @@ impl ClobClient {
             self.create_request_with_headers(Method::POST, "/auth/api-key", headers.into_iter());
 
         let response = req.send().await?;
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to create API key",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         Ok(response.json::<ApiCreds>().await?)
     }
@@ -773,12 +726,7 @@ impl ClobClient {
         );
 
         let response = req.send().await?;
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to derive API key",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         Ok(response.json::<ApiCreds>().await?)
     }
@@ -822,6 +770,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         let api_keys_response: crate::types::ApiKeysResponse = response
             .json()
@@ -859,6 +808,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .text()
@@ -904,13 +854,7 @@ impl ClobClient {
             .query(&[("token_id", token_id)])
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get neg risk",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         let neg_risk_response: Value = response.json().await?;
         let neg_risk = neg_risk_response["neg_risk"]
@@ -1219,16 +1163,7 @@ impl ClobClient {
         );
 
         let response = req.send().await?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
-            let message = if body.is_empty() {
-                "Failed to post order".to_string()
-            } else {
-                format!("Failed to post order: {}", body)
-            };
-            return Err(PolyfillError::api(status, message));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<PostOrderResponse>()
@@ -1292,12 +1227,7 @@ impl ClobClient {
         );
 
         let response = req.send().await?;
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to cancel order",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<CancelOrdersResponse>()
@@ -1332,12 +1262,7 @@ impl ClobClient {
         );
 
         let response = req.send().await?;
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to cancel orders",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<CancelOrdersResponse>()
@@ -1361,12 +1286,7 @@ impl ClobClient {
             self.create_request_with_headers(Method::DELETE, "/cancel-all", headers.into_iter());
 
         let response = req.send().await?;
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to cancel all orders",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<CancelOrdersResponse>()
@@ -1422,10 +1342,12 @@ impl ClobClient {
                 .into_iter()
                 .fold(req, |r, (k, v)| r.header(HeaderName::from_static(k), v));
 
-            let page = r
+            let response = r
                 .send()
                 .await
-                .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?
+                .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+            let response = Self::ensure_success(response).await?;
+            let page = response
                 .json::<DataPage<crate::types::OpenOrder>>()
                 .await
                 .map_err(|e| {
@@ -1489,15 +1411,14 @@ impl ClobClient {
                 .into_iter()
                 .fold(req, |r, (k, v)| r.header(HeaderName::from_static(k), v));
 
-            let page = r
+            let response = r
                 .send()
                 .await
-                .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?
-                .json::<DataPage<Value>>()
-                .await
-                .map_err(|e| {
-                    PolyfillError::parse(format!("Failed to parse response: {}", e), None)
-                })?;
+                .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+            let response = Self::ensure_success(response).await?;
+            let page = response.json::<DataPage<Value>>().await.map_err(|e| {
+                PolyfillError::parse(format!("Failed to parse response: {}", e), None)
+            })?;
 
             next_cursor = page.next_cursor;
             output.extend(page.data);
@@ -1556,6 +1477,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<Value>()
@@ -1607,6 +1529,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<Value>()
@@ -1636,13 +1559,7 @@ impl ClobClient {
             .json(&request_data)
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get batch midpoints",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         let midpoints: std::collections::HashMap<String, Decimal> = response.json().await?;
         Ok(midpoints)
@@ -1673,13 +1590,7 @@ impl ClobClient {
             .json(&request_data)
             .send()
             .await?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get batch prices",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         let prices: std::collections::HashMap<String, std::collections::HashMap<Side, Decimal>> =
             response.json().await?;
@@ -1700,6 +1611,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<Vec<OrderBookSummary>>()
@@ -1735,6 +1647,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<crate::types::OpenOrder>()
@@ -1751,6 +1664,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<Value>()
@@ -1772,6 +1686,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<Value>()
@@ -1779,7 +1694,8 @@ impl ClobClient {
             .map_err(|e| PolyfillError::parse(format!("Failed to parse response: {}", e), None))
     }
 
-    /// Cancel market orders with optional filters
+    /// Cancel market orders with optional filters.
+    /// A successful HTTP response can still contain per-order failures in `not_canceled`.
     pub async fn cancel_market_orders(
         &self,
         market: Option<&str>,
@@ -1815,6 +1731,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<Value>()
@@ -1851,6 +1768,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<Value>()
@@ -1902,6 +1820,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<Value>()
@@ -1938,13 +1857,18 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
-        let result: Value = response
+        #[derive(Deserialize)]
+        struct ScoringResponse {
+            scoring: bool,
+        }
+        let result: ScoringResponse = response
             .json()
             .await
             .map_err(|e| PolyfillError::parse(format!("Failed to parse response: {}", e), None))?;
 
-        Ok(result["scoring"].as_bool().unwrap_or(false))
+        Ok(result.scoring)
     }
 
     /// Check if multiple orders are scoring
@@ -1977,6 +1901,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<std::collections::HashMap<String, bool>>()
@@ -2018,13 +1943,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to create RFQ request",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json()
@@ -2062,13 +1981,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to cancel RFQ request",
-            ));
-        }
+        Self::ensure_success(response).await?;
 
         Ok(())
     }
@@ -2100,13 +2013,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get RFQ requests",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json()
@@ -2144,13 +2051,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to create RFQ quote",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json()
@@ -2188,13 +2089,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to cancel RFQ quote",
-            ));
-        }
+        Self::ensure_success(response).await?;
 
         Ok(())
     }
@@ -2226,13 +2121,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get RFQ requester quotes",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json()
@@ -2267,13 +2156,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get RFQ quoter quotes",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json()
@@ -2303,13 +2186,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to get RFQ best quote",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json()
@@ -2347,13 +2224,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to accept RFQ quote",
-            ));
-        }
+        Self::ensure_success(response).await?;
 
         Ok(())
     }
@@ -2388,13 +2259,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
-
-        if !response.status().is_success() {
-            return Err(PolyfillError::api(
-                response.status().as_u16(),
-                "Failed to approve RFQ order",
-            ));
-        }
+        let response = Self::ensure_success(response).await?;
 
         response
             .json()
@@ -2416,6 +2281,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         Self::parse_json_response(response).await
     }
@@ -2434,6 +2300,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         Self::parse_json_response(response).await
     }
@@ -2452,6 +2319,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         Self::parse_json_response(response).await
     }
@@ -2470,6 +2338,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         Self::parse_json_response(response).await
     }
@@ -2482,6 +2351,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<crate::types::Market>()
@@ -2500,6 +2370,7 @@ impl ClobClient {
             .send()
             .await
             .map_err(|e| PolyfillError::network(format!("Request failed: {}", e), e))?;
+        let response = Self::ensure_success(response).await?;
 
         response
             .json::<Value>()
@@ -3059,6 +2930,173 @@ mod tests {
         assert!(result.is_ok());
         let neg_risk = result.unwrap();
         assert!(!neg_risk);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_http_failures_are_errors_before_deserialization() {
+        let mut server = Server::new_async().await;
+        let client = create_test_client_with_l2_auth(&server.url());
+        for status in [401, 500, 429] {
+            for body in [r#"{"error":"request denied"}"#, "upstream unavailable"] {
+                for (method, endpoint) in [
+                    ("DELETE", "/cancel-market-orders"),
+                    ("GET", "/balance-allowance"),
+                    ("GET", "/order-scoring"),
+                    ("GET", "/data/order/123"),
+                    ("GET", "/data/orders"),
+                    ("GET", "/markets"),
+                    ("DELETE", "/auth/api-key"),
+                    ("DELETE", "/rfq/request"),
+                ] {
+                    let mock = server
+                        .mock(method, endpoint)
+                        .match_query(Matcher::Any)
+                        .with_status(status)
+                        .with_header("retry-after", "7")
+                        .with_body(body)
+                        .create_async()
+                        .await;
+                    let result = match endpoint {
+                        "/cancel-market-orders" => {
+                            client.cancel_market_orders(None, None).await.map(|_| ())
+                        },
+                        "/balance-allowance" => {
+                            client.get_balance_allowance(None).await.map(|_| ())
+                        },
+                        "/order-scoring" => client.is_order_scoring("123").await.map(|_| ()),
+                        "/data/order/123" => client.get_order("123").await.map(|_| ()),
+                        "/data/orders" => client.get_orders(None, None).await.map(|_| ()),
+                        "/markets" => client.get_markets(None).await.map(|_| ()),
+                        "/auth/api-key" => client.delete_api_key().await.map(|_| ()),
+                        "/rfq/request" => client.cancel_rfq_request("123").await,
+                        _ => unreachable!(),
+                    };
+                    match result.expect_err(endpoint) {
+                        PolyfillError::Api {
+                            status: actual,
+                            message,
+                            ..
+                        } if status != 429 => {
+                            assert_eq!(actual, status as u16);
+                            assert!(message.contains(body), "{message}");
+                        },
+                        PolyfillError::RateLimit {
+                            message,
+                            retry_after,
+                        } if status == 429 => {
+                            assert!(message.contains(body), "{message}");
+                            assert_eq!(retry_after, Some(std::time::Duration::from_secs(7)));
+                        },
+                        error => panic!("{endpoint}: unexpected error {error:?}"),
+                    }
+                    mock.assert_async().await;
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_scoring_requires_boolean_on_success() {
+        let mut server = Server::new_async().await;
+        let client = create_test_client_with_l2_auth(&server.url());
+        for (body, expected) in [
+            (r#"{"scoring":true}"#, Some(true)),
+            (r#"{"scoring":false}"#, Some(false)),
+            (r#"{"error":"unexpected"}"#, None),
+            (r#"{"scoring":"false"}"#, None),
+            (r#"{"scoring":null}"#, None),
+        ] {
+            let mock = server
+                .mock("GET", "/order-scoring")
+                .match_query(Matcher::Any)
+                .with_status(200)
+                .with_body(body)
+                .create_async()
+                .await;
+            let result = client.is_order_scoring("123").await;
+            if let Some(expected) = expected {
+                assert_eq!(result.unwrap(), expected);
+            } else {
+                assert!(matches!(result, Err(PolyfillError::Parse { .. })));
+            }
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_market_cancellation_preserves_per_order_failures() {
+        let mut server = Server::new_async().await;
+        let body = json!({"canceled": ["123"], "not_canceled": {"456": "already matched"}});
+        let mock = server
+            .mock("DELETE", "/cancel-market-orders")
+            .with_status(200)
+            .with_body(body.to_string())
+            .create_async()
+            .await;
+        let client = create_test_client_with_l2_auth(&server.url());
+        assert_eq!(client.cancel_market_orders(None, None).await.unwrap(), body);
+        mock.assert_async().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_rate_limit_with_empty_body_and_retry_after_variants() {
+        let mut server = Server::new_async().await;
+        let client = create_test_client_with_l2_auth(&server.url());
+        for (header, expected) in [
+            (None, None),
+            (Some("invalid"), None),
+            (Some("0"), Some(std::time::Duration::ZERO)),
+            (
+                Some("Wed, 21 Oct 2015 07:28:00 GMT"),
+                Some(std::time::Duration::ZERO),
+            ),
+        ] {
+            let mut mock = server
+                .mock("GET", "/order-scoring")
+                .match_query(Matcher::Any)
+                .with_status(429);
+            if let Some(header) = header {
+                mock = mock.with_header("retry-after", header);
+            }
+            let mock = mock.create_async().await;
+            match client.is_order_scoring("123").await.unwrap_err() {
+                PolyfillError::RateLimit {
+                    message,
+                    retry_after,
+                } => {
+                    assert!(message.contains("429"));
+                    assert_eq!(retry_after, expected);
+                },
+                error => panic!("unexpected error {error:?}"),
+            }
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_http_error_body_is_bounded() {
+        let mut server = Server::new_async().await;
+        let body = format!("diagnostic {}DO_NOT_RETAIN", "é".repeat(8192));
+        let mock = server
+            .mock("GET", "/order-scoring")
+            .match_query(Matcher::Any)
+            .with_status(500)
+            .with_body(body)
+            .create_async()
+            .await;
+        let client = create_test_client_with_l2_auth(&server.url());
+        match client.is_order_scoring("123").await.unwrap_err() {
+            PolyfillError::Api {
+                status, message, ..
+            } => {
+                assert_eq!(status, 500);
+                assert!(message.contains("diagnostic"));
+                assert!(!message.contains("DO_NOT_RETAIN"));
+                assert!(message.len() < 4200);
+            },
+            error => panic!("unexpected error {error:?}"),
+        }
+        mock.assert_async().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
