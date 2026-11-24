@@ -58,7 +58,6 @@ jobs:
   security:
     name: Security audit
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
     - uses: actions/checkout@v4
@@ -68,7 +67,10 @@ jobs:
       run: cargo install cargo-audit
 
     - name: Run security audit
-      run: cargo audit
+      # Temporarily accept crypto-bigint timing leakage in the Alloy signing stack.
+      # Remove this exception when Alloy supports a patched crypto-bigint release.
+      # Upstream: https://github.com/alloy-rs/alloy/issues/4445
+      run: cargo audit --ignore RUSTSEC-2026-0387
 
   no_alloc:
     name: No-alloc hot paths
