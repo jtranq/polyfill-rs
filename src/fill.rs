@@ -232,93 +232,91 @@ impl FillEngine {
         Ok(result)
     }
 
-    /// Simulate executing a limit order.
+    /// Simulate immediate execution against opposing levels within the limit.
+    /// FOK orders require the full quantity. Other types retain partial fills.
+    /// Any remainder is not placed on the book by this simulation.
     pub fn execute_limit_order(
         &mut self,
         order: &OrderRequest,
         book: &crate::book::OrderBook,
     ) -> Result<FillResult> {
         let start_time = Utc::now();
-
-        // Validate order
         self.validate_limit_order(order)?;
-
-        // Check if order can be filled immediately
-        let can_fill = match order.side {
-            Side::BUY => {
-                if let Some(best_ask) = book.best_ask() {
-                    order.price >= best_ask.price
-                } else {
-                    false
-                }
-            },
-            Side::SELL => {
-                if let Some(best_bid) = book.best_bid() {
-                    order.price <= best_bid.price
-                } else {
-                    false
-                }
-            },
+        let order_id = order
+            .client_id
+            .clone()
+            .unwrap_or_else(|| "limit_order".to_string());
+        let levels = match order.side {
+            Side::BUY => book.asks(None),
+            Side::SELL => book.bids(None),
         };
-
-        if !can_fill {
-            return Ok(FillResult {
-                order_id: order
-                    .client_id
-                    .clone()
-                    .unwrap_or_else(|| "limit_order".to_string()),
-                fills: Vec::new(),
-                total_size: Decimal::ZERO,
-                average_price: Decimal::ZERO,
-                total_cost: Decimal::ZERO,
-                fees: Decimal::ZERO,
-                status: FillStatus::Unfilled,
-                timestamp: start_time,
+        let mut remaining_size = order.size;
+        let mut fills = Vec::new();
+        let mut total_size = Decimal::ZERO;
+        let mut total_cost = Decimal::ZERO;
+        for level in levels {
+            let crosses = match order.side {
+                Side::BUY => level.price <= order.price,
+                Side::SELL => level.price >= order.price,
+            };
+            if remaining_size.is_zero() || !crosses {
+                break;
+            }
+            let size = remaining_size.min(level.size);
+            let cost = size * level.price;
+            fills.push(FillEvent {
+                id: uuid::Uuid::new_v4().to_string(),
+                order_id: order_id.clone(),
+                token_id: order.token_id.clone(),
+                side: order.side,
+                price: level.price,
+                size,
+                timestamp: Utc::now(),
+                maker_address: Address::ZERO,
+                taker_address: Address::ZERO,
+                fee: self.calculate_fee(cost),
             });
+            remaining_size -= size;
+            total_size += size;
+            total_cost += cost;
         }
 
-        // Simulate immediate fill
-        let fill = FillEvent {
-            id: uuid::Uuid::new_v4().to_string(),
-            order_id: order
-                .client_id
-                .clone()
-                .unwrap_or_else(|| "limit_order".to_string()),
-            token_id: order.token_id.clone(),
-            side: order.side,
-            price: order.price,
-            size: order.size,
-            timestamp: Utc::now(),
-            maker_address: Address::ZERO,
-            taker_address: Address::ZERO,
-            fee: self.calculate_fee(order.price * order.size),
+        if order.order_type == OrderType::FOK && !remaining_size.is_zero() {
+            fills.clear();
+            total_size = Decimal::ZERO;
+            total_cost = Decimal::ZERO;
+        }
+        let status = if total_size.is_zero() {
+            FillStatus::Unfilled
+        } else if remaining_size.is_zero() {
+            FillStatus::Filled
+        } else {
+            FillStatus::Partial
         };
-
         let result = FillResult {
-            order_id: order
-                .client_id
-                .clone()
-                .unwrap_or_else(|| "limit_order".to_string()),
-            fills: vec![fill],
-            total_size: order.size,
-            average_price: order.price,
-            total_cost: order.price * order.size,
-            fees: self.calculate_fee(order.price * order.size),
-            status: FillStatus::Filled,
+            order_id,
+            fees: fills.iter().map(|fill| fill.fee).sum(),
+            fills,
+            total_size,
+            average_price: if total_size.is_zero() {
+                Decimal::ZERO
+            } else {
+                total_cost / total_size
+            },
+            total_cost,
+            status,
             timestamp: start_time,
         };
-
-        // Store fills for tracking
-        self.fills
-            .insert(result.order_id.clone(), result.fills.clone());
-
+        if !result.fills.is_empty() {
+            self.fills
+                .insert(result.order_id.clone(), result.fills.clone());
+        }
         info!(
             "Limit order executed: {} {} @ {}",
             result.total_size,
             order.side.as_str(),
             result.average_price
         );
-
         Ok(result)
     }
 
