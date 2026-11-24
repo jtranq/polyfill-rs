@@ -1,140 +1,73 @@
 --- a/vendor/alloy-consensus/Cargo.toml
 +++ b/vendor/alloy-consensus/Cargo.toml
-@@ -174,7 +174,7 @@
- default-features = false
- 
- [dependencies.k256]
+@@ -177 +177 @@
 -version = "0.13"
 +version = "0.14"
- features = [
-     "ecdsa",
-     "ecdsa",
-@@ -259,7 +259,7 @@
- features = ["serde"]
- 
- [dev-dependencies.k256]
+@@ -262 +262 @@
 -version = "0.13"
 +version = "0.14"
- features = ["ecdsa"]
- default-features = false
- 
 --- a/vendor/alloy-consensus/src/crypto.rs
 +++ b/vendor/alloy-consensus/src/crypto.rs
-@@ -422,7 +422,7 @@
-     /// Converts a public key into an ethereum address by hashing the encoded public key with
-     /// keccak256.
-     pub fn public_key_to_address(public: VerifyingKey) -> Address {
+@@ -425 +425 @@
 -        let hash = keccak256(&public.to_encoded_point(/* compress = */ false).as_bytes()[1..]);
 +        let hash = keccak256(&public.to_sec1_point(/* compress = */ false).as_bytes()[1..]);
-         Address::from_slice(&hash[12..])
-     }
- }
+--- a/vendor/alloy-consensus/src/transaction/envelope.rs
++++ b/vendor/alloy-consensus/src/transaction/envelope.rs
+@@ -743 +743 @@
+-    /// transaction. Returns an error otherwise.    
++    /// transaction. Returns an error otherwise.
 --- a/vendor/alloy-eip7702/Cargo.toml
 +++ b/vendor/alloy-eip7702/Cargo.toml
-@@ -91,7 +91,7 @@
- default-features = false
- 
- [dependencies.k256]
+@@ -94 +94 @@
 -version = "0.13"
 +version = "0.14"
- features = ["ecdsa"]
- optional = true
- default-features = false
 --- a/vendor/alloy-primitives/Cargo.toml
 +++ b/vendor/alloy-primitives/Cargo.toml
-@@ -276,7 +276,7 @@
- version = "1"
- 
- [dependencies.k256]
+@@ -279 +279 @@
 -version = "0.13"
 +version = "0.14"
- features = ["ecdsa"]
- optional = true
- default-features = false
 --- a/vendor/alloy-primitives/src/bits/address.rs
 +++ b/vendor/alloy-primitives/src/bits/address.rs
-@@ -508,9 +508,9 @@
-     #[cfg(feature = "k256")]
-     #[doc(alias = "from_verifying_key")]
-     pub fn from_public_key(pubkey: &k256::ecdsa::VerifyingKey) -> Self {
+@@ -511 +511 @@
 -        use k256::elliptic_curve::sec1::ToEncodedPoint;
 +        use k256::elliptic_curve::sec1::ToSec1Point;
-         let affine: &k256::AffinePoint = pubkey.as_ref();
+@@ -513 +513 @@
 -        let encoded = affine.to_encoded_point(false);
 +        let encoded = affine.to_sec1_point(false);
-         Self::from_raw_public_key(&encoded.as_bytes()[1..])
-     }
- 
+--- a/vendor/alloy-primitives/src/hex_literal.rs
++++ b/vendor/alloy-primitives/src/hex_literal.rs
+@@ -169 +169 @@
+-                
++
 --- a/vendor/alloy-signer/Cargo.toml
 +++ b/vendor/alloy-signer/Cargo.toml
-@@ -84,11 +84,11 @@
- default-features = false
- 
- [dependencies.elliptic-curve]
+@@ -87 +87 @@
 -version = "0.13"
 +version = "0.14"
- default-features = false
- 
- [dependencies.k256]
+@@ -91 +91 @@
 -version = "0.13"
 +version = "0.14"
- features = ["ecdsa"]
- default-features = false
- 
 --- a/vendor/alloy-signer/src/utils.rs
 +++ b/vendor/alloy-signer/src/utils.rs
-@@ -1,7 +1,7 @@
- //! Utility functions for working with Ethereum signatures.
- 
- use alloy_primitives::{keccak256, Address};
+@@ -4 +4 @@
 -use elliptic_curve::sec1::ToEncodedPoint;
 +use elliptic_curve::sec1::ToSec1Point;
- use k256::ecdsa::{SigningKey, VerifyingKey};
- 
- /// Converts an ECDSA private key to its corresponding Ethereum Address.
-@@ -14,7 +14,7 @@
- #[inline]
- pub fn public_key_to_address(pubkey: &VerifyingKey) -> Address {
-     let affine = pubkey.as_ref();
+@@ -17 +17 @@
 -    let encoded = affine.to_encoded_point(false);
 +    let encoded = affine.to_sec1_point(false);
-     raw_public_key_to_address(&encoded.as_bytes()[1..])
- }
- 
 --- a/vendor/alloy-signer-local/Cargo.toml
 +++ b/vendor/alloy-signer-local/Cargo.toml
-@@ -103,7 +103,7 @@
- default-features = false
- 
- [dependencies.elliptic-curve]
+@@ -106 +106 @@
 -version = "0.13"
 +version = "0.14"
- optional = true
- default-features = false
- 
-@@ -113,7 +113,7 @@
- default-features = false
- 
- [dependencies.k256]
+@@ -116 +116 @@
 -version = "0.13"
 +version = "0.14"
- features = ["ecdsa"]
- default-features = false
- 
 --- a/vendor/alloy-signer-local/src/private_key.rs
 +++ b/vendor/alloy-signer-local/src/private_key.rs
-@@ -7,6 +7,7 @@
- use alloy_signer::Signer;
- use k256::{
-     ecdsa::{self, SigningKey},
+@@ -9,0 +10 @@
 +    elliptic_curve::{Generate, rand_core::{TryRng, TryCryptoRng}},
-     FieldBytes, NonZeroScalar, SecretKey as K256SecretKey,
- };
- use rand::{CryptoRng, Rng};
-@@ -14,6 +15,28 @@
- 
- #[cfg(feature = "keystore")]
- use std::path::Path;
+@@ -16,0 +18,22 @@
 +
 +// Bridge rand 0.8 callers to RustCrypto's rand_core 0.10 without changing entropy.
 +struct RngCompat<'a, R>(&'a mut R);
@@ -157,44 +90,17 @@
 +}
 +
 +impl<R: Rng + CryptoRng> TryCryptoRng for RngCompat<'_, R> {}
- 
- impl LocalSigner<SigningKey> {
-     /// Creates a new [`LocalSigner`] instance from a [`SigningKey`].
-@@ -62,7 +85,7 @@
-     /// Creates a new random keypair seeded with the provided RNG.
-     #[inline]
-     pub fn random_with<R: Rng + CryptoRng>(rng: &mut R) -> Self {
+@@ -65 +88 @@
 -        Self::from_signing_key(SigningKey::random(rng))
 +        Self::from_signing_key(SigningKey::generate_from_rng(&mut RngCompat(rng)))
-     }
- 
-     /// Borrow the secret [`NonZeroScalar`] value for this key.
-@@ -93,7 +116,7 @@
-     /// array.
-     #[inline]
-     pub fn public_key(&self) -> B512 {
+@@ -96 +119 @@
 -        B512::from_slice(&self.credential.verifying_key().to_encoded_point(false).as_bytes()[1..])
 +        B512::from_slice(&self.credential.verifying_key().to_sec1_point(false).as_bytes()[1..])
-     }
- 
-     /// Converts this `PrivateKeySigner` (k256-based) to a
 --- a/vendor/alloy-signer-local/src/yubi.rs
 +++ b/vendor/alloy-signer-local/src/yubi.rs
-@@ -2,7 +2,7 @@
- 
- use super::LocalSigner;
- use alloy_signer::utils::raw_public_key_to_address;
+@@ -5 +5 @@
 -use elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
 +use elliptic_curve::sec1::{FromEncodedPoint, ToSec1Point};
- use k256::{PublicKey, Secp256k1};
- use yubihsm::{
-     asymmetric::Algorithm::EcK256, ecdsa::Signer as YubiSigner, object, object::Label, Capability,
-@@ -55,7 +55,7 @@
-     fn from(credential: YubiSigner<Secp256k1>) -> Self {
-         // Uncompress the public key.
-         let pubkey = PublicKey::from_encoded_point(credential.public_key()).unwrap();
+@@ -58 +58 @@
 -        let pubkey = pubkey.to_encoded_point(false);
 +        let pubkey = pubkey.to_sec1_point(false);
-         let bytes = pubkey.as_bytes();
-         debug_assert_eq!(bytes[0], 0x04);
-         let address = raw_public_key_to_address(&bytes[1..]);
