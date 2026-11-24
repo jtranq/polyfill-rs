@@ -261,6 +261,18 @@ impl OrderBook {
         }
     }
 
+    /// Discard data and ordering clocks after the owning feed loses continuity.
+    pub(crate) fn invalidate(&mut self) {
+        self.bids.levels.clear();
+        self.asks.levels.clear();
+        self.sequence = 0;
+        self.last_delta_sequence = 0;
+        self.last_snapshot_timestamp_ms = 0;
+        self.last_snapshot_hash_fingerprint = None;
+        self.snapshot_generation = 0;
+        self.timestamp = chrono::DateTime::UNIX_EPOCH;
+    }
+
     /// Set the tick size for this book
     /// This tells us the minimum price increment allowed
     /// We store it in ticks for fast validation without conversion overhead
