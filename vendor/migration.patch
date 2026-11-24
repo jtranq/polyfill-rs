@@ -14,7 +14,7 @@
 --- a/vendor/alloy-consensus/src/transaction/envelope.rs
 +++ b/vendor/alloy-consensus/src/transaction/envelope.rs
 @@ -743 +743 @@
--    /// transaction. Returns an error otherwise.    
+-    /// transaction. Returns an error otherwise.
 +    /// transaction. Returns an error otherwise.
 --- a/vendor/alloy-eip7702/Cargo.toml
 +++ b/vendor/alloy-eip7702/Cargo.toml
@@ -37,7 +37,7 @@
 --- a/vendor/alloy-primitives/src/hex_literal.rs
 +++ b/vendor/alloy-primitives/src/hex_literal.rs
 @@ -169 +169 @@
--                
+-
 +
 --- a/vendor/alloy-signer/Cargo.toml
 +++ b/vendor/alloy-signer/Cargo.toml

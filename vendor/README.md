@@ -9,3 +9,5 @@ The source adaptations rename SEC1 point conversion APIs and bridge the existing
 Cargo applies `[patch.crates-io]` only at the workspace root. These overrides fix builds from this checkout, including its examples and the SDK benchmark. They do not fix applications that depend on a published Polyfill crate unless those applications also install the overrides. Do not describe a crates.io release as fixing this advisory until compatible upstream Alloy releases replace these overrides or consumers have an explicit supported migration path.
 
 Remove the overrides and these copies once upstream Alloy supports the patched RustCrypto dependency stack. The original package versions remain unchanged to satisfy the SDK's dependency requirements. Optional upstream features outside Polyfill's feature set have not been validated.
+
+`migration.patch` is a compact review diff against the published sources with trailing whitespace normalized. `UPSTREAM.json` records each original source commit.
