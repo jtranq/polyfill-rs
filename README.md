@@ -94,7 +94,7 @@ The 21.4% performance improvement comes from HTTP/2 tuning with 512KB stream win
 
 ### Memory Architecture
 
-Configurable book depth limiting prevents memory bloat. Hot data structures group frequently-accessed fields for cache line efficiency. Allocation-sensitive hot paths are covered by targeted no-heap-traffic tests where the implementation currently avoids allocation, reallocation, and deallocation.
+Books retain all received levels so incremental updates keep the correct best prices. The configured `max_depth` limits returned views. Storage grows with the number of live levels. Hot data structures group frequently-accessed fields for cache line efficiency. Allocation-sensitive hot paths are covered by targeted no-heap-traffic tests where the implementation currently avoids allocation, reallocation, and deallocation.
 
 ### Architectural Principles
 
