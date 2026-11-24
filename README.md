@@ -30,7 +30,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-polyfill-rs = "0.4.0"
+polyfill-rs = "0.5.0"
 ```
 
 Replace your imports:
