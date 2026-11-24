@@ -93,6 +93,10 @@ required-features = ["side-by-side-benchmark"]
 name = "official_client_side_by_side_benchmark"
 required-features = ["official-client-benchmark"]
 
+[[example]]
+name = "live_submit_path_benchmark"
+required-features = ["official-client-benchmark"]
+
 [[bench]]
 name = "book_updates"
 harness = false
