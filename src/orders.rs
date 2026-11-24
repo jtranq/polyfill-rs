@@ -486,7 +486,8 @@ impl OrderBuilder {
         Ok(amounts)
     }
 
-    /// Calculate market price from order book levels
+    /// Calculate market price from REST order book levels in worst-first order.
+    /// Bids must be ascending and asks descending.
     pub fn calculate_market_price(
         &self,
         positions: &[crate::types::BookLevel],
@@ -497,7 +498,7 @@ impl OrderBuilder {
         let mut sum = Decimal::ZERO;
         let mut last_price = None;
 
-        for level in positions {
+        for level in positions.iter().rev() {
             sum += match side {
                 Side::BUY => level.size * level.price,
                 Side::SELL => level.size,
@@ -1157,28 +1158,52 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate_market_price_returns_last_level_for_fak() {
+    fn test_calculate_market_price_sweeps_rest_levels_best_first() {
         let builder = test_builder();
-        let levels = vec![
-            crate::types::BookLevel {
-                price: Decimal::from_str("0.40").unwrap(),
-                size: Decimal::from_str("2.0").unwrap(),
-            },
-            crate::types::BookLevel {
-                price: Decimal::from_str("0.45").unwrap(),
-                size: Decimal::from_str("1.0").unwrap(),
-            },
-        ];
-
-        let price = builder
-            .calculate_market_price(
-                &levels,
-                Decimal::from_str("10.0").unwrap(),
-                Side::SELL,
-                OrderType::FAK,
-            )
-            .unwrap();
-        assert_eq!(price, Decimal::from_str("0.45").unwrap());
+        // REST bids ascend and asks descend, so the best level is last.
+        for (side, prices, amounts) in [
+            (Side::SELL, ["0.48", "0.50"], ["5", "10", "15", "20", "25"]),
+            (
+                Side::BUY,
+                ["0.52", "0.50"],
+                ["2.5", "5", "7.5", "10.2", "12.5"],
+            ),
+        ] {
+            let levels: Vec<_> = prices
+                .map(|price| crate::types::BookLevel {
+                    price: Decimal::from_str(price).unwrap(),
+                    size: Decimal::from(10),
+                })
+                .into_iter()
+                .collect();
+            for order_type in [OrderType::FOK, OrderType::FAK] {
+                for (index, amount) in amounts.into_iter().enumerate() {
+                    let result = builder.calculate_market_price(
+                        &levels,
+                        Decimal::from_str(amount).unwrap(),
+                        side,
+                        order_type,
+                    );
+                    if index == 4 && order_type == OrderType::FOK {
+                        assert!(result.is_err());
+                    } else {
+                        let expected = if index < 2 {
+                            levels[1].price
+                        } else {
+                            levels[0].price
+                        };
+                        assert_eq!(
+                            result.unwrap(),
+                            expected,
+                            "{side:?} {order_type:?} {amount}"
+                        );
+                    }
+                }
+                assert!(builder
+                    .calculate_market_price(&[], Decimal::ONE, side, order_type)
+                    .is_err());
+            }
+        }
     }
 
     #[test]

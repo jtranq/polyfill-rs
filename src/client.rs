@@ -2781,6 +2781,75 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_market_order_accepts_price_limit_at_best_rest_level() {
+        let mut server = Server::new_async().await;
+        let tick_size = server
+            .mock("GET", "/tick-size")
+            .match_query(Matcher::UrlEncoded("token_id".into(), "123".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"minimum_tick_size":"0.01"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let book = server
+            .mock("GET", "/book")
+            .match_query(Matcher::UrlEncoded("token_id".into(), "123".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "market": "0x123",
+                    "asset_id": "123",
+                    "hash": "0xabc123",
+                    "timestamp": "1234567890",
+                    "bids": [
+                        {"price": "0.48", "size": "10"},
+                        {"price": "0.50", "size": "10"}
+                    ],
+                    "asks": [
+                        {"price": "0.52", "size": "10"},
+                        {"price": "0.50", "size": "10"}
+                    ],
+                    "min_order_size": "1",
+                    "neg_risk": false,
+                    "tick_size": "0.01",
+                    "last_trade_price": "0.50"
+                })
+                .to_string(),
+            )
+            .expect(2)
+            .create_async()
+            .await;
+        let client = create_test_client_with_auth(&server.url());
+        let options = CreateOrderOptions {
+            tick_size: Some(Decimal::from_str("0.01").unwrap()),
+            neg_risk: Some(false),
+        };
+
+        for (side, amount, maker, taker) in [
+            (Side::SELL, "5", "5000000", "2500000"),
+            (Side::BUY, "2.5", "2500000", "5000000"),
+        ] {
+            let mut args = crate::types::MarketOrderArgs::new(
+                "123",
+                Decimal::from_str(amount).unwrap(),
+                side,
+                OrderType::FOK,
+            );
+            args.price_limit = Some(Decimal::from_str("0.50").unwrap());
+            let order = client
+                .create_market_order(&args, Some(&options))
+                .await
+                .unwrap();
+            assert_eq!(order.maker_amount, maker);
+            assert_eq!(order.taker_amount, taker);
+        }
+        tick_size.assert_async().await;
+        book.assert_async().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_get_order_book_success() {
         let mut server = Server::new_async().await;
         let mock_response = r#"{
