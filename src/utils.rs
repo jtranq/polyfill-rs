@@ -296,7 +296,7 @@ pub mod math {
         price >= tick_size && price <= (Decimal::ONE - tick_size)
     }
 
-    /// Calculate maximum slippage for market order
+    /// Calculate adverse slippage as a fraction, where 0.02 means 2%.
     pub fn calculate_slippage(
         target_price: Decimal,
         executed_price: Decimal,

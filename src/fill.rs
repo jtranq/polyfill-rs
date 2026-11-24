@@ -49,7 +49,7 @@ pub enum FillStatus {
 pub struct FillEngine {
     /// Minimum fill size for market orders
     min_fill_size: Decimal,
-    /// Maximum slippage tolerance (as percentage)
+    /// Maximum adverse slippage in percent, where 2 means 2%.
     max_slippage_pct: Decimal,
     /// Fee rate in basis points
     fee_rate_bps: u32,
@@ -59,6 +59,7 @@ pub struct FillEngine {
 
 impl FillEngine {
     /// Create a new fill simulation engine.
+    /// `max_slippage_pct` is a percentage, where 2 means 2%.
     pub fn new(min_fill_size: Decimal, max_slippage_pct: Decimal, fee_rate_bps: u32) -> Self {
         Self {
             min_fill_size,
@@ -147,11 +148,12 @@ impl FillEngine {
 
         // Check slippage
         if let Some(slippage) = self.calculate_slippage(order, &fills) {
-            if slippage > self.max_slippage_pct {
-                warn!(
-                    "Slippage {}% exceeds maximum {}%",
-                    slippage, self.max_slippage_pct
-                );
+            let tolerance = order
+                .slippage_tolerance
+                .unwrap_or(self.max_slippage_pct)
+                .min(self.max_slippage_pct);
+            if slippage > tolerance {
+                warn!("Slippage {}% exceeds maximum {}%", slippage, tolerance);
                 return Ok(FillResult {
                     order_id: order
                         .client_id
@@ -306,7 +308,7 @@ impl FillEngine {
         Ok(result)
     }
 
-    /// Calculate slippage for a market order
+    /// Calculate adverse slippage in percent relative to the first fill price.
     fn calculate_slippage(
         &self,
         order: &MarketOrderRequest,
@@ -326,11 +328,10 @@ impl FillEngine {
             Side::SELL => fills.first()?.price, // Best bid
         };
 
-        Some(math::calculate_slippage(
-            reference_price,
-            average_price,
-            order.side,
-        ))
+        Some(
+            math::calculate_slippage(reference_price, average_price, order.side)
+                * Decimal::from(100),
+        )
     }
 
     /// Calculate fee for a trade
@@ -340,6 +341,16 @@ impl FillEngine {
 
     /// Validate market order parameters
     fn validate_market_order(&self, order: &MarketOrderRequest) -> Result<()> {
+        if self.max_slippage_pct < Decimal::ZERO
+            || order
+                .slippage_tolerance
+                .is_some_and(|tolerance| tolerance < Decimal::ZERO)
+        {
+            return Err(PolyfillError::validation(
+                "Slippage percentages cannot be negative",
+            ));
+        }
+
         if order.amount.is_zero() {
             return Err(PolyfillError::order(
                 "Market order amount cannot be zero",
