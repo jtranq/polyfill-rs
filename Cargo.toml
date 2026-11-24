@@ -29,6 +29,8 @@ simd-json = "0.13"
 dotenvy = "0.15"
 
 # Ethereum and crypto
+# Keep the patched RustCrypto stack above the RUSTSEC-2026-0387 fix.
+crypto-bigint = { version = "0.7.11", default-features = false }
 alloy-primitives = "1"
 alloy-sol-types = { version = "1", features = ["eip712-serde", "json"] }
 alloy-signer = { version = "1", features = ["eip712"] }
@@ -128,3 +130,11 @@ opt-level = 1
 # Optimizations for test performance
 opt-level = 2
 debug = true 
+
+[patch.crates-io]
+# Temporary Alloy adapters for k256 0.14, see vendor/README.md.
+alloy-primitives = { path = "vendor/alloy-primitives" }
+alloy-signer = { path = "vendor/alloy-signer" }
+alloy-signer-local = { path = "vendor/alloy-signer-local" }
+alloy-consensus = { path = "vendor/alloy-consensus" }
+alloy-eip7702 = { path = "vendor/alloy-eip7702" }
